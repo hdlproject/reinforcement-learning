@@ -3,18 +3,26 @@ import pygame
 from gymnasium import spaces
 import numpy as np
 import math
+import matplotlib.pyplot as plt
 
 
 class LineFollowingEnv(gym.Env):
-    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 4}
+    metadata = {"render_modes": ["human", "rgb_array", "chart"], "render_fps": 4}
 
     def __init__(self, render_mode=None, sensor_number=5, motor_number=2):
+        np.set_printoptions(suppress=True, precision=8)
+
         self.sensor_number = sensor_number
         self.motor_number = motor_number
 
         # straight along the center line (y-axis)
         self.current_angle = 0
         self._x_pos = 0
+        self._y_pos = 0
+        self._distance = 0
+        self._distances = [self._distance]
+        self._reward = 0
+        self._rewards = [self._reward]
 
         # calculate left and right border of x-axis
         if self.sensor_number % 2 == 1:
@@ -32,8 +40,8 @@ class LineFollowingEnv(gym.Env):
         else:
             # if the sensor number is even, the center position is indicated by
             # the two middle sensor having the max sensor value / 2
-            self._center_location[self.sensor_number / 2] = 0.5
-            self._center_location[(self.sensor_number / 2) - 1] = 0.5
+            self._center_location[int(self.sensor_number / 2)] = 0.5
+            self._center_location[int((self.sensor_number / 2)) - 1] = 0.5
         self._target_location = self._center_location
 
         self._farthest_location = np.zeros(self.sensor_number)
@@ -58,6 +66,12 @@ class LineFollowingEnv(gym.Env):
         self.clock = None
         # The size of the PyGame window
         self.window_size = 512
+        self.fig = None
+        self.ax = None
+        self.line_distance = None
+        self.line_reward = None
+        # The size of Matplot window
+        self.figsize = (10, 5)
 
     def _get_obs(self):
         return {
@@ -77,12 +91,20 @@ class LineFollowingEnv(gym.Env):
         super().reset(seed=seed, options=options)
 
         self._x_pos = np.random.randint(self.min_x, self.max_x)
+        self._agent_location = self._center_location
         # self._agent_location = np.random.uniform(low=0.0, high=1.0, size=(self.sensor_number,))
         self._agent_location = self._convert_x_to_sensor_value(self._x_pos)
         self._target_location = self._center_location
 
         observation = self._get_obs()
         info = self._get_info()
+
+        self._reward = np.exp(-info["distance"])
+        self._rewards.append(self._reward)
+        self._distance = info["distance"]
+        self._distances.append(self._distance)
+
+        self._render_frame()
 
         return observation, info
 
@@ -92,14 +114,17 @@ class LineFollowingEnv(gym.Env):
         # forward speed
         v = (left_speed + right_speed) / 2.0
         # angular velocity
-        # positive means left, negative means right
+        # positive means left (counterclockwise), negative means right (clockwise)
         omega = (right_speed - left_speed) / wheel_base
 
         # calculate new position
-        self._x_pos += v * np.cos(self.current_angle)
+        self._x_pos += v * np.sin(self.current_angle)
+        self._y_pos += v * np.cos(self.current_angle)
         self.current_angle += omega
 
-        return self._convert_x_to_sensor_value(self._x_pos)
+        vals = self._convert_x_to_sensor_value(self._x_pos)
+
+        return vals
 
     def _convert_x_to_sensor_value(self, x):
         # array of sensor value weight
@@ -116,6 +141,10 @@ class LineFollowingEnv(gym.Env):
         next_sensor_reading = np.exp(-(real_sensor_pos ** 2) / (2 * sensor_sensitivity ** 2))
         # normalize the value to 0.0 - 1.0
         # e.g if x=1, [0.1353, 1.0, 0.1353, 0.000335, 0.0000000152]
+
+        if np.max(next_sensor_reading) == 0:
+            return next_sensor_reading
+
         return next_sensor_reading / np.max(next_sensor_reading)
 
     def step(self, action):
@@ -125,24 +154,44 @@ class LineFollowingEnv(gym.Env):
         observation = self._get_obs()
         info = self._get_info()
 
+        self._render_frame()
+
         terminated = np.array_equal(self._agent_location, self._target_location)
 
-        reward = info["distance"] / self._farthest_distance
+        self._reward = np.exp(-info["distance"])
+        self._rewards.append(self._reward)
+        self._distance = info["distance"]
+        self._distances.append(self._distance)
+        print(self._x_pos, info["distance"], self._reward, terminated, self._agent_location)
 
-        return observation, reward, terminated, False, info
+        return observation, self._reward, terminated, False, info
 
     def render(self):
         self._render_frame()
 
-    def _render_frame(self):
-        if self.window is None and self.render_mode == "human":
+    def _before_render_human(self):
+        if self.window is None:
             pygame.init()
             pygame.display.init()
             self.window = pygame.display.set_mode((self.window_size, self.window_size))
 
-        if self.clock is None and self.render_mode == "human":
+        if self.clock is None:
             self.clock = pygame.time.Clock()
 
+    def _after_render_human(self, canvas):
+        self.window.blit(canvas, canvas.get_rect())
+        pygame.event.pump()
+        pygame.display.update()
+
+        self.clock.tick(self.metadata["render_fps"])
+
+    def _after_render_rgb_array(self, canvas):
+        print(np.transpose(
+            np.array(pygame.surfarray.pixels3d(canvas)),
+            axes=(1, 0, 2)
+        ))
+
+    def _render_pygame(self):
         canvas = pygame.Surface((self.window_size, self.window_size))
         canvas.fill((255, 255, 255))
 
@@ -151,13 +200,24 @@ class LineFollowingEnv(gym.Env):
         pix_square_size = self.window_size / horizontal_square
 
         # draw center line
-        y_center_line = (horizontal_square / 2) - (pix_square_size / 2)
+        x_center_line = ((horizontal_square / 2) * pix_square_size) - (pix_square_size / 2)
         pygame.draw.rect(
             canvas,
             (255, 0, 0),
             pygame.Rect(
-                (0, y_center_line),
+                (x_center_line, 0),
                 (pix_square_size, self.window_size),
+            )
+        )
+
+        x_pos = (((horizontal_square / 2) + self._x_pos) * pix_square_size) - (
+                (self.sensor_number / 2) * pix_square_size)
+        pygame.draw.rect(
+            canvas,
+            (0, 0, 255),
+            pygame.Rect(
+                (x_pos, x_center_line),
+                (self.sensor_number * pix_square_size, pix_square_size),
             )
         )
 
@@ -177,19 +237,49 @@ class LineFollowingEnv(gym.Env):
                 width=3,
             )
 
-        if self.render_mode == "human":
-            self.window.blit(canvas, canvas.get_rect())
-            pygame.event.pump()
-            pygame.display.update()
+            return canvas
 
-            self.clock.tick(self.metadata["render_fps"])
-        else:
-            return np.transpose(
-                np.array(pygame.surfarray.pixels3d(canvas)),
-                axes=(1, 0, 2)
-            )
+    def _before_render_matplot(self):
+        if self.fig is None:
+            plt.ion()
+
+            self.fig, self.ax = plt.subplots(figsize=self.figsize)
+            self.line_distance, = self.ax.plot([], [], label="Distance to Center Line", color='green', marker='o')
+            self.line_reward, = self.ax.plot([], [], label="Reward", color='blue', marker='o')
+            self.ax.legend()
+            self.ax.set_xlim(0, 1000)
+            self.ax.set_ylim(0, 10)
+
+    def _render_matplot(self):
+        print(self._distances, self._rewards)
+
+        self.line_distance.set_data(list(range(0, len(self._distances))), self._distances)
+        self.line_reward.set_data(list(range(0, len(self._rewards))), self._rewards)
+
+        self.ax.relim()
+        self.ax.autoscale_view()
+        plt.pause(0.01)
+
+    def _render_frame(self):
+        if self.render_mode == "human":
+            self._before_render_human()
+        elif self.render_mode == "chart":
+            self._before_render_matplot()
+
+        if self.render_mode == "human" or self.render_mode == "rgb_array":
+            canvas = self._render_pygame()
+
+            if self.render_mode == "human":
+                self._after_render_human(canvas)
+            else:
+                self._after_render_rgb_array(canvas)
+        elif self.render_mode == "chart":
+            self._render_matplot()
 
     def close(self):
         if self.window is not None:
             pygame.display.quit()
             pygame.quit()
+
+        if self.fig is not None:
+            plt.ioff()
