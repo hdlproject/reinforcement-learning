@@ -62,10 +62,14 @@ class LineFollowingEnv(gym.Env):
 
         assert render_mode is None or render_mode in self.metadata["render_modes"]
         self.render_mode = render_mode
+
+        # rendering human
         self.window = None
         self.clock = None
         # The size of the PyGame window
         self.window_size = 512
+
+        # rendering chart
         self.fig = None
         self.ax = None
         self.line_distance = None
