@@ -1,10 +1,10 @@
-from trading.env import TradingEnv
+from trading.envs import TradingEnv
 from trading.nn import DQN
 import numpy as np
 import torch
 import gymnasium as gym
 
-episodes = 500
+episodes = 100
 # how much the exploration will be conducted
 epsilon = 1
 # how much the future reward is valued compared to the immediate reward
@@ -144,6 +144,8 @@ def run_nn():
         print(f"Episode {ep + 1}: Total reward = {total_reward:.2f}")
         env.render_any(total_reward)
 
-    np.convolve(total_rewards, np.ones(window_size) / window_size, mode='valid')
+    moving_average_window = int(episodes/10)
+    smoothed_data = np.convolve(total_rewards, np.ones(moving_average_window) / moving_average_window, mode='valid')
+    env.batch_render_any(smoothed_data, True)
 
     env.close()
